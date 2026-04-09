@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { offlineQuery } from "@/lib/offlineQuery";
-import { Search, X, Download, BookOpen, Plus, Pencil, Trash2 } from "lucide-react";
+import { Search, X, Download, BookOpen, Plus, Pencil, Trash2, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,8 @@ import { supabase } from "@/integrations/supabase/customClient";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { exportToExcel } from "@/lib/exportUtils";
+import LedgerEntryForm from "@/components/ledger/LedgerEntryForm";
+import LedgerTable from "@/components/ledger/LedgerTable";
 
 interface Contact {
   id: string; name: string; type: string; phone: string | null;
@@ -47,6 +49,11 @@ export default function LedgerPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  // Dialog-level filters
+  const [dialogSearch, setDialogSearch] = useState("");
+  const [dialogDateFrom, setDialogDateFrom] = useState("");
+  const [dialogDateTo, setDialogDateTo] = useState("");
+
   // Manual entry form
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingEntry, setEditingEntry] = useState<LedgerEntryDB | null>(null);
@@ -75,6 +82,9 @@ export default function LedgerPage() {
     setSelectedContact(contact);
     setLedgerLoading(true);
     setDialogOpen(true);
+    setDialogSearch("");
+    setDialogDateFrom("");
+    setDialogDateTo("");
     await loadLedgerEntries(contact);
   };
 
@@ -94,7 +104,7 @@ export default function LedgerPage() {
         entries.push({
           id: le.id,
           date: le.date,
-          type: le.reference_type === 'opening' ? 'Opening' : le.reference_type === 'sale' ? 'Sale' : 'Payment',
+          type: le.reference_type === 'opening' ? 'Opening' : le.reference_type === 'sale' ? 'Sale' : le.reference_type === 'payment' ? 'Payment' : le.reference_type || 'Other',
           ref: le.description.split(' - ')[0] || "—",
           description: le.description,
           debit: Number(le.debit) || 0,
@@ -108,61 +118,25 @@ export default function LedgerPage() {
         description: "Opening Balance",
         debit: 0, credit: Number(contact.opening_balance) || 0, balance: Number(contact.opening_balance) || 0,
       });
-
-      let sales = await offlineQuery<any>("sale_transactions", {
-        eq: { customer_id: contact.id },
-        order: "date",
-      });
-      if (dateFrom) sales = sales.filter((s: any) => s.date >= dateFrom);
-      if (dateTo) sales = sales.filter((s: any) => s.date <= dateTo);
-
-      for (const s of sales) {
-        entries.push({
-          date: s.date, type: "Sale", ref: s.invoice_no || "—",
-          description: `Sale - ${s.payment_method} (${s.payment_status})`,
-          debit: 0, credit: Number(s.total) || 0, balance: 0,
-        });
-      }
-
-      let purchases = await offlineQuery<any>("purchases", {
-        eq: { supplier_id: contact.id },
-        order: "date",
-      });
-      if (dateFrom) purchases = purchases.filter((p: any) => p.date >= dateFrom);
-      if (dateTo) purchases = purchases.filter((p: any) => p.date <= dateTo);
-
-      for (const p of purchases) {
-        entries.push({
-          date: p.date, type: "Purchase", ref: p.reference_no || "—",
-          description: `Purchase - ${p.payment_method} (${p.payment_status})`,
-          debit: Number(p.total) || 0, credit: 0, balance: 0,
-        });
-      }
-
-      entries.sort((a, b) => {
-        if (a.date === "—") return -1;
-        if (b.date === "—") return 1;
-        return a.date.localeCompare(b.date);
-      });
-
-      let runningBalance = 0;
-      for (const entry of entries) {
-        if (entry.type === "Opening") {
-          runningBalance = entry.credit;
-          entry.balance = runningBalance;
-        } else {
-          runningBalance += entry.credit - entry.debit;
-          entry.balance = runningBalance;
-        }
-      }
     }
 
     setLedger(entries);
     setLedgerLoading(false);
   };
 
-  const totalDebit = ledger.reduce((s, e) => s + e.debit, 0);
-  const totalCredit = ledger.reduce((s, e) => s + e.credit, 0);
+  // Filtered ledger entries for the dialog
+  const filteredLedger = ledger.filter((e) => {
+    const matchesSearch = !dialogSearch ||
+      e.description.toLowerCase().includes(dialogSearch.toLowerCase()) ||
+      e.type.toLowerCase().includes(dialogSearch.toLowerCase()) ||
+      e.ref.toLowerCase().includes(dialogSearch.toLowerCase());
+    const matchesFrom = !dialogDateFrom || e.date >= dialogDateFrom || e.date === "—";
+    const matchesTo = !dialogDateTo || e.date <= dialogDateTo || e.date === "—";
+    return matchesSearch && matchesFrom && matchesTo;
+  });
+
+  const totalDebit = filteredLedger.reduce((s, e) => s + e.debit, 0);
+  const totalCredit = filteredLedger.reduce((s, e) => s + e.credit, 0);
 
   const resetForm = () => {
     setEntryDate(new Date().toISOString().split("T")[0]);
@@ -181,7 +155,6 @@ export default function LedgerPage() {
 
     setSaving(true);
 
-    // Get last balance
     const { data: lastEntries } = await supabase
       .from("ledger_entries")
       .select("balance")
@@ -195,34 +168,21 @@ export default function LedgerPage() {
 
     if (editingEntry) {
       const { error } = await supabase.from("ledger_entries").update({
-        date: entryDate,
-        description: entryDesc,
-        debit: entryDebit,
-        credit: entryCredit,
-        balance: newBalance,
-        reference_type: entryType,
+        date: entryDate, description: entryDesc, debit: entryDebit,
+        credit: entryCredit, balance: newBalance, reference_type: entryType,
       }).eq("id", editingEntry.id);
-
       if (error) { toast.error("Failed to update entry"); setSaving(false); return; }
       toast.success("Ledger entry updated");
     } else {
       const { error } = await supabase.from("ledger_entries").insert({
-        contact_id: selectedContact.id,
-        date: entryDate,
-        description: entryDesc,
-        debit: entryDebit,
-        credit: entryCredit,
-        balance: newBalance,
-        reference_type: entryType,
+        contact_id: selectedContact.id, date: entryDate, description: entryDesc,
+        debit: entryDebit, credit: entryCredit, balance: newBalance, reference_type: entryType,
       });
-
       if (error) { toast.error("Failed to add entry"); setSaving(false); return; }
       toast.success("Ledger entry added");
     }
 
-    // Update contact balance
     await supabase.from("contacts").update({ current_balance: newBalance }).eq("id", selectedContact.id);
-
     resetForm();
     setSaving(false);
     await loadLedgerEntries(selectedContact);
@@ -230,10 +190,8 @@ export default function LedgerPage() {
 
   const handleEditEntry = async (entry: LedgerEntry) => {
     if (!entry.id) { toast.error("This entry cannot be edited"); return; }
-    
     const { data } = await supabase.from("ledger_entries").select("*").eq("id", entry.id).single();
     if (!data) { toast.error("Entry not found"); return; }
-
     setEditingEntry(data as LedgerEntryDB);
     setEntryDate(data.date);
     setEntryDesc(data.description);
@@ -246,7 +204,6 @@ export default function LedgerPage() {
   const handleDeleteEntry = async (entry: LedgerEntry) => {
     if (!entry.id || !selectedContact) { toast.error("This entry cannot be deleted"); return; }
     if (!confirm("Delete this ledger entry?")) return;
-
     const { error } = await supabase.from("ledger_entries").delete().eq("id", entry.id);
     if (error) { toast.error("Failed to delete"); return; }
     toast.success("Entry deleted");
@@ -255,13 +212,20 @@ export default function LedgerPage() {
 
   const handleExportExcel = () => {
     if (!selectedContact) return;
-    exportToExcel(ledger.map(e => ({
+    exportToExcel(filteredLedger.map(e => ({
       Date: e.date, Type: e.type, Reference: e.ref, Description: e.description,
       Debit: e.debit, Credit: e.credit, Balance: e.balance,
     })), `Ledger_${selectedContact.name}`, "Ledger");
     toast.success("Exported to Excel");
   };
 
+  const clearDialogFilters = () => {
+    setDialogSearch("");
+    setDialogDateFrom("");
+    setDialogDateTo("");
+  };
+
+  const hasDialogFilters = dialogSearch || dialogDateFrom || dialogDateTo;
 
   return (
     <div>
@@ -324,51 +288,42 @@ export default function LedgerPage() {
                   <Plus className="h-4 w-4" /> Add Entry
                 </Button>
                 <Button size="sm" variant="outline" className="gap-2" onClick={handleExportExcel}><Download className="h-4 w-4" /> Excel</Button>
-                
               </div>
             </DialogTitle>
           </DialogHeader>
 
-          {/* Add/Edit Entry Form */}
+          {/* Search & Date Filters inside dialog */}
+          <div className="flex flex-col sm:flex-row gap-2 mb-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search transactions..."
+                value={dialogSearch}
+                onChange={(e) => setDialogSearch(e.target.value)}
+                className="pl-9 h-9 text-sm"
+              />
+            </div>
+            <Input type="date" value={dialogDateFrom} onChange={(e) => setDialogDateFrom(e.target.value)} className="w-36 h-9 text-sm" />
+            <Input type="date" value={dialogDateTo} onChange={(e) => setDialogDateTo(e.target.value)} className="w-36 h-9 text-sm" />
+            {hasDialogFilters && (
+              <Button size="sm" variant="ghost" onClick={clearDialogFilters} className="h-9 gap-1">
+                <X className="h-3.5 w-3.5" /> Clear
+              </Button>
+            )}
+          </div>
+
           {showAddForm && (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="rounded-lg border bg-muted/30 p-4 mb-4">
-              <h3 className="text-sm font-semibold mb-3">{editingEntry ? "Edit Ledger Entry" : "Add Ledger Entry"}</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <Label className="text-xs">Date</Label>
-                  <Input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">Type</Label>
-                  <Select value={entryType} onValueChange={setEntryType}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="sale">Sale (Credit)</SelectItem>
-                      <SelectItem value="payment">Payment (Debit)</SelectItem>
-                      <SelectItem value="opening">Opening Balance</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="sm:col-span-2">
-                  <Label className="text-xs">Description</Label>
-                  <Input placeholder="e.g. Invoice F1234, Cash Deposit..." value={entryDesc} onChange={(e) => setEntryDesc(e.target.value)} />
-                </div>
-                <div>
-                  <Label className="text-xs">Debit (Payment received)</Label>
-                  <Input type="number" min={0} value={entryDebit || ""} onChange={(e) => setEntryDebit(Number(e.target.value) || 0)} placeholder="0" />
-                </div>
-                <div>
-                  <Label className="text-xs">Credit (Sale amount)</Label>
-                  <Input type="number" min={0} value={entryCredit || ""} onChange={(e) => setEntryCredit(Number(e.target.value) || 0)} placeholder="0" />
-                </div>
-              </div>
-              <div className="flex gap-2 mt-3">
-                <Button size="sm" onClick={handleSaveEntry} disabled={saving}>
-                  {saving ? "Saving..." : editingEntry ? "Update" : "Add Entry"}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={resetForm}>Cancel</Button>
-              </div>
-            </motion.div>
+            <LedgerEntryForm
+              editingEntry={editingEntry}
+              entryDate={entryDate} setEntryDate={setEntryDate}
+              entryDesc={entryDesc} setEntryDesc={setEntryDesc}
+              entryDebit={entryDebit} setEntryDebit={setEntryDebit}
+              entryCredit={entryCredit} setEntryCredit={setEntryCredit}
+              entryType={entryType} setEntryType={setEntryType}
+              saving={saving}
+              onSave={handleSaveEntry}
+              onCancel={resetForm}
+            />
           )}
 
           {ledgerLoading ? (
@@ -391,45 +346,17 @@ export default function LedgerPage() {
                   </p>
                 </Card>
               </div>
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b bg-muted/50">
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Date</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Type</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Description</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Debit</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Credit</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Balance</th>
-                      <th className="px-3 py-2 text-center font-medium text-muted-foreground w-20">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ledger.map((e, i) => (
-                      <tr key={e.id || i} className="border-b last:border-0 hover:bg-muted/30">
-                        <td className="px-3 py-2">{e.date}</td>
-                        <td className="px-3 py-2"><Badge variant="outline">{e.type}</Badge></td>
-                        <td className="px-3 py-2">{e.description}</td>
-                        <td className="px-3 py-2 text-right">{e.debit ? `Rs ${e.debit.toLocaleString()}` : "—"}</td>
-                        <td className="px-3 py-2 text-right">{e.credit ? `Rs ${e.credit.toLocaleString()}` : "—"}</td>
-                        <td className={`px-3 py-2 text-right font-medium ${e.balance > 0 ? "text-destructive" : ""}`}>Rs {e.balance.toLocaleString()}</td>
-                        <td className="px-3 py-2 text-center">
-                          {e.id && (
-                            <div className="flex gap-1 justify-center">
-                              <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleEditEntry(e)}>
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => handleDeleteEntry(e)}>
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {hasDialogFilters && (
+                <p className="text-xs text-muted-foreground mb-2">
+                  <Filter className="inline h-3 w-3 mr-1" />
+                  Showing {filteredLedger.length} of {ledger.length} entries
+                </p>
+              )}
+              <LedgerTable
+                entries={filteredLedger}
+                onEdit={handleEditEntry}
+                onDelete={handleDeleteEntry}
+              />
             </>
           )}
         </DialogContent>
