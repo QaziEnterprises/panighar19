@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Component, ErrorInfo, ReactNode } from "react";
+import { useEffect, useState, useCallback, Component, ErrorInfo, ReactNode, lazy, Suspense } from "react";
 import { useAppSettings, useSessionTimeout } from "@/hooks/useAppSettings";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
@@ -7,29 +7,31 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import AppLayout from "@/components/AppLayout";
 import CustomCursor from "@/components/CustomCursor";
-import DashboardPage from "@/pages/DashboardPage";
-import InventoryPage from "@/pages/InventoryPage";
 import LoginPage from "@/pages/LoginPage";
-import ResetPasswordPage from "@/pages/ResetPasswordPage";
-import AdminPage from "@/pages/AdminPage";
-import ContactsPage from "@/pages/ContactsPage";
-import ProductsPage from "@/pages/ProductsPage";
-import PurchasesPage from "@/pages/PurchasesPage";
-import ExpensesPage from "@/pages/ExpensesPage";
-import POSPage from "@/pages/POSPage";
-import ReportsPage from "@/pages/ReportsPage";
-import BillsPage from "@/pages/BillsPage";
-import SummaryPage from "@/pages/SummaryPage";
-import LedgerPage from "@/pages/LedgerPage";
-import AuditPage from "@/pages/AuditPage";
-import ProfitCalculatorPage from "@/pages/ProfitCalculatorPage";
-import BackupPage from "@/pages/BackupPage";
-import PriceListPage from "@/pages/PriceListPage";
-import SettingsPage from "@/pages/SettingsPage";
-import NotFound from "./pages/NotFound";
 import { initializeDefaultData } from "@/lib/store";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+
+// Lazy load all pages for performance
+const DashboardPage = lazy(() => import("@/pages/DashboardPage"));
+const InventoryPage = lazy(() => import("@/pages/InventoryPage"));
+const ResetPasswordPage = lazy(() => import("@/pages/ResetPasswordPage"));
+const AdminPage = lazy(() => import("@/pages/AdminPage"));
+const ContactsPage = lazy(() => import("@/pages/ContactsPage"));
+const ProductsPage = lazy(() => import("@/pages/ProductsPage"));
+const PurchasesPage = lazy(() => import("@/pages/PurchasesPage"));
+const ExpensesPage = lazy(() => import("@/pages/ExpensesPage"));
+const POSPage = lazy(() => import("@/pages/POSPage"));
+const ReportsPage = lazy(() => import("@/pages/ReportsPage"));
+const BillsPage = lazy(() => import("@/pages/BillsPage"));
+const SummaryPage = lazy(() => import("@/pages/SummaryPage"));
+const LedgerPage = lazy(() => import("@/pages/LedgerPage"));
+const AuditPage = lazy(() => import("@/pages/AuditPage"));
+const ProfitCalculatorPage = lazy(() => import("@/pages/ProfitCalculatorPage"));
+const BackupPage = lazy(() => import("@/pages/BackupPage"));
+const PriceListPage = lazy(() => import("@/pages/PriceListPage"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
+const NotFound = lazy(() => import("@/pages/NotFound"));
 
 const queryClient = new QueryClient();
 
@@ -117,31 +119,39 @@ function AppRoutes() {
     );
   }
 
-  if (!user) return <Routes><Route path="/login" element={<LoginPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes>;
+  const pageFallback = (
+    <div className="flex items-center justify-center h-[calc(100vh-6rem)]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    </div>
+  );
+
+  if (!user) return <Routes><Route path="/login" element={<LoginPage />} /><Route path="/reset-password" element={<Suspense fallback={pageFallback}><ResetPasswordPage /></Suspense>} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes>;
 
   return (
     <AppLayout>
-      <Routes>
-        <Route path="/login" element={<Navigate to="/" replace />} />
-        <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-        <Route path="/inventory" element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
-        <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
-        <Route path="/products-db" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
-        <Route path="/purchases" element={<ProtectedRoute><PurchasesPage /></ProtectedRoute>} />
-        <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
-        <Route path="/pos" element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
-        <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
-        <Route path="/bills" element={<ProtectedRoute><BillsPage /></ProtectedRoute>} />
-        <Route path="/summary" element={<ProtectedRoute><SummaryPage /></ProtectedRoute>} />
-        <Route path="/ledger" element={<ProtectedRoute><LedgerPage /></ProtectedRoute>} />
-        <Route path="/profit" element={<ProtectedRoute><ProfitCalculatorPage /></ProtectedRoute>} />
-        <Route path="/backup" element={<ProtectedRoute><BackupPage /></ProtectedRoute>} />
-        <Route path="/price-list" element={<ProtectedRoute><PriceListPage /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-        <Route path="/audit" element={<ProtectedRoute adminOnly><AuditPage /></ProtectedRoute>} />
-        <Route path="/admin" element={<ProtectedRoute adminOnly><AdminPage /></ProtectedRoute>} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
+      <Suspense fallback={pageFallback}>
+        <Routes>
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+          <Route path="/inventory" element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
+          <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
+          <Route path="/products-db" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
+          <Route path="/purchases" element={<ProtectedRoute><PurchasesPage /></ProtectedRoute>} />
+          <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
+          <Route path="/pos" element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
+          <Route path="/bills" element={<ProtectedRoute><BillsPage /></ProtectedRoute>} />
+          <Route path="/summary" element={<ProtectedRoute><SummaryPage /></ProtectedRoute>} />
+          <Route path="/ledger" element={<ProtectedRoute><LedgerPage /></ProtectedRoute>} />
+          <Route path="/profit" element={<ProtectedRoute><ProfitCalculatorPage /></ProtectedRoute>} />
+          <Route path="/backup" element={<ProtectedRoute><BackupPage /></ProtectedRoute>} />
+          <Route path="/price-list" element={<ProtectedRoute><PriceListPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="/audit" element={<ProtectedRoute adminOnly><AuditPage /></ProtectedRoute>} />
+          <Route path="/admin" element={<ProtectedRoute adminOnly><AdminPage /></ProtectedRoute>} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
     </AppLayout>
   );
 }

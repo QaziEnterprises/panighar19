@@ -422,11 +422,11 @@ export default function BillsPage() {
               <thead>
               <tr className="border-b bg-muted/50">
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Invoice</th>
-                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">Date</th>
-                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">Time</th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">Date & Time</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Customer</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Payment</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
+                  <th className="px-4 py-3 text-right font-medium text-muted-foreground">Discount</th>
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Total</th>
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Paid</th>
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Remaining</th>
@@ -447,12 +447,14 @@ export default function BillsPage() {
                         {s.invoice_no || "—"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDatePK(s.date)}</td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        {formatTime(s.created_at)}
-                      </span>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      <div className="text-xs">
+                        <div>{formatDatePK(s.date)}</div>
+                        <div className="flex items-center gap-1 text-muted-foreground/70">
+                          <Clock className="h-3 w-3" />
+                          {formatTime(s.created_at)}
+                        </div>
+                      </div>
                     </td>
                     <td className="px-4 py-3 font-medium">{getCustomerName(s.customer_id)}</td>
                     <td className="px-4 py-3">
@@ -476,6 +478,9 @@ export default function BillsPage() {
                           </div>
                         );
                       })()}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                      {Number(s.discount || 0) > 0 ? `PKR ${Number(s.discount).toLocaleString()}` : "—"}
                     </td>
                     <td className="px-4 py-3 text-right font-bold tabular-nums">
                       PKR {Number(s.total).toLocaleString()}
