@@ -3,7 +3,7 @@ import { offlineQuery } from "@/lib/offlineQuery";
 import {
   Search, X, ShoppingBag, Plus, Minus, Trash2, CreditCard, Printer,
   MessageCircle, ScanLine, UserPlus, Package, ChevronDown, ChevronUp,
-  Receipt, Wallet, Star, Hash, Tag, Calendar,
+  Receipt, Wallet, Star, Hash, Tag, Calendar, Calculator,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { logAction } from "@/lib/auditLog";
