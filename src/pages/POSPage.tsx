@@ -76,6 +76,50 @@ export default function POSPage() {
   );
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [saleDate, setSaleDate] = useState(draft?.saleDate || new Date().toISOString().split("T")[0]);
+  const [calcOpen, setCalcOpen] = useState(false);
+  const [calcDisplay, setCalcDisplay] = useState("0");
+  const [calcPrev, setCalcPrev] = useState<number | null>(null);
+  const [calcOp, setCalcOp] = useState<string | null>(null);
+  const [calcNewNum, setCalcNewNum] = useState(true);
+
+  // Calculator functions
+  const calcPress = (key: string) => {
+    if (key >= "0" && key <= "9" || key === ".") {
+      setCalcDisplay(prev => calcNewNum ? key : prev === "0" && key !== "." ? key : prev + key);
+      setCalcNewNum(false);
+    } else if (["+", "-", "×", "÷"].includes(key)) {
+      setCalcPrev(parseFloat(calcDisplay));
+      setCalcOp(key);
+      setCalcNewNum(true);
+    } else if (key === "=") {
+      if (calcPrev !== null && calcOp) {
+        const cur = parseFloat(calcDisplay);
+        let result = 0;
+        if (calcOp === "+") result = calcPrev + cur;
+        else if (calcOp === "-") result = calcPrev - cur;
+        else if (calcOp === "×") result = calcPrev * cur;
+        else if (calcOp === "÷") result = cur !== 0 ? calcPrev / cur : 0;
+        setCalcDisplay(String(Math.round(result * 100) / 100));
+        setCalcPrev(null);
+        setCalcOp(null);
+        setCalcNewNum(true);
+      }
+    } else if (key === "C") {
+      setCalcDisplay("0");
+      setCalcPrev(null);
+      setCalcOp(null);
+      setCalcNewNum(true);
+    }
+  };
+
+  // Combined price feature: user types total price for a cart item, auto-calc unit price
+  const setCombinedPrice = (index: number, combinedPrice: number) => {
+    setCart(cart.map((c, idx) => {
+      if (idx !== index) return c;
+      const unitPrice = c.quantity > 0 ? Math.round((combinedPrice / c.quantity) * 100) / 100 : 0;
+      return { ...c, unit_price: unitPrice, subtotal: combinedPrice };
+    }));
+  };
 
   // ── Draft persistence ──
   useEffect(() => {
@@ -328,7 +372,12 @@ export default function POSPage() {
                         <button className="h-7 w-7 flex items-center justify-center hover:bg-muted transition-colors rounded-r-md" onClick={() => updateQty(index, 1)}><Plus className="h-3 w-3" /></button>
                       </div>
                       <span className="text-muted-foreground text-xs">×</span>
-                      <NumberInput value={ci.unit_price} onValueChange={(v) => updateUnitPrice(index, v)} className="w-28 h-7 text-xs text-center border-border/60 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
+                      <NumberInput value={ci.unit_price} onValueChange={(v) => updateUnitPrice(index, v)} className="w-20 h-7 text-xs text-center border-border/60 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
+                    </div>
+                    {/* Combined price input */}
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[10px] text-muted-foreground">Total:</span>
+                      <NumberInput value={ci.subtotal} onValueChange={(v) => setCombinedPrice(index, v)} className="w-24 h-6 text-xs text-center border-border/60 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
                     </div>
                   </div>
                   <div className="text-right shrink-0 flex flex-col items-end gap-1">
@@ -406,16 +455,23 @@ export default function POSPage() {
           </div>
         </div>
 
-        {/* Payment */}
-        <div className="flex gap-2">
-          <Select value={paymentStatus} onValueChange={setPaymentStatus}>
-            <SelectTrigger className="h-8 text-xs flex-1"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="paid">✓ Paid</SelectItem>
-              <SelectItem value="partial">◐ Partial</SelectItem>
-              <SelectItem value="due">⏳ Due</SelectItem>
-            </SelectContent>
-          </Select>
+        {/* Payment Status Buttons */}
+        <div className="flex gap-1.5">
+          {[
+            { value: "paid", label: "✓ Paid", activeClass: "bg-primary text-primary-foreground" },
+            { value: "partial", label: "◐ Split", activeClass: "bg-accent text-accent-foreground" },
+            { value: "due", label: "⏳ Due", activeClass: "bg-destructive text-destructive-foreground" },
+          ].map(({ value, label, activeClass }) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={paymentStatus === value ? "default" : "outline"}
+              className={`flex-1 h-8 text-xs font-semibold ${paymentStatus === value ? activeClass : ""}`}
+              onClick={() => setPaymentStatus(value)}
+            >
+              {label}
+            </Button>
+          ))}
         </div>
 
         <Input placeholder="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} className="h-8 text-xs" />
@@ -494,7 +550,28 @@ export default function POSPage() {
         <Button variant="outline" size="icon" className="h-10 w-10 shrink-0" onClick={() => setShowCustomEntry(!showCustomEntry)} title="Custom Item">
           <Plus className="h-4 w-4" />
         </Button>
+        <Button variant="outline" size="icon" className="h-10 w-10 shrink-0" onClick={() => setCalcOpen(!calcOpen)} title="Calculator">
+          <Calculator className="h-4 w-4" />
+        </Button>
       </div>
+
+      {/* ── Calculator ── */}
+      <AnimatePresence>
+        {calcOpen && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden shrink-0 mb-2">
+            <div className="rounded-lg border bg-card p-3 max-w-[240px] ml-auto">
+              <div className="bg-muted rounded px-3 py-2 text-right text-lg font-mono font-bold mb-2 min-h-[36px]">{calcDisplay}</div>
+              <div className="grid grid-cols-4 gap-1">
+                {["C", "÷", "×", "-", "7", "8", "9", "+", "4", "5", "6", "=", "1", "2", "3", ".", "0"].map((key) => (
+                  <Button key={key} size="sm" variant={["C", "÷", "×", "-", "+", "="].includes(key) ? "secondary" : "outline"}
+                    className={`h-8 text-xs font-semibold ${key === "=" ? "row-span-2" : ""} ${key === "0" ? "col-span-2" : ""}`}
+                    onClick={() => calcPress(key)}>{key}</Button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Custom Item ── */}
       <AnimatePresence>
