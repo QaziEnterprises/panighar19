@@ -119,31 +119,39 @@ function AppRoutes() {
     );
   }
 
-  if (!user) return <Routes><Route path="/login" element={<LoginPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes>;
+  const pageFallback = (
+    <div className="flex items-center justify-center h-[calc(100vh-6rem)]">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+    </div>
+  );
+
+  if (!user) return <Routes><Route path="/login" element={<LoginPage />} /><Route path="/reset-password" element={<Suspense fallback={pageFallback}><ResetPasswordPage /></Suspense>} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes>;
 
   return (
     <AppLayout>
-      <Routes>
-        <Route path="/login" element={<Navigate to="/" replace />} />
-        <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-        <Route path="/inventory" element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
-        <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
-        <Route path="/products-db" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
-        <Route path="/purchases" element={<ProtectedRoute><PurchasesPage /></ProtectedRoute>} />
-        <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
-        <Route path="/pos" element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
-        <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
-        <Route path="/bills" element={<ProtectedRoute><BillsPage /></ProtectedRoute>} />
-        <Route path="/summary" element={<ProtectedRoute><SummaryPage /></ProtectedRoute>} />
-        <Route path="/ledger" element={<ProtectedRoute><LedgerPage /></ProtectedRoute>} />
-        <Route path="/profit" element={<ProtectedRoute><ProfitCalculatorPage /></ProtectedRoute>} />
-        <Route path="/backup" element={<ProtectedRoute><BackupPage /></ProtectedRoute>} />
-        <Route path="/price-list" element={<ProtectedRoute><PriceListPage /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
-        <Route path="/audit" element={<ProtectedRoute adminOnly><AuditPage /></ProtectedRoute>} />
-        <Route path="/admin" element={<ProtectedRoute adminOnly><AdminPage /></ProtectedRoute>} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
+      <Suspense fallback={pageFallback}>
+        <Routes>
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+          <Route path="/inventory" element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
+          <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
+          <Route path="/products-db" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
+          <Route path="/purchases" element={<ProtectedRoute><PurchasesPage /></ProtectedRoute>} />
+          <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
+          <Route path="/pos" element={<ProtectedRoute><POSPage /></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
+          <Route path="/bills" element={<ProtectedRoute><BillsPage /></ProtectedRoute>} />
+          <Route path="/summary" element={<ProtectedRoute><SummaryPage /></ProtectedRoute>} />
+          <Route path="/ledger" element={<ProtectedRoute><LedgerPage /></ProtectedRoute>} />
+          <Route path="/profit" element={<ProtectedRoute><ProfitCalculatorPage /></ProtectedRoute>} />
+          <Route path="/backup" element={<ProtectedRoute><BackupPage /></ProtectedRoute>} />
+          <Route path="/price-list" element={<ProtectedRoute><PriceListPage /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="/audit" element={<ProtectedRoute adminOnly><AuditPage /></ProtectedRoute>} />
+          <Route path="/admin" element={<ProtectedRoute adminOnly><AdminPage /></ProtectedRoute>} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
     </AppLayout>
   );
 }
