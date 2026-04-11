@@ -193,30 +193,18 @@ export default function LedgerPage() {
       const isSaleType = ["sale", "Sale", "opening", "Opening"].includes(entryType);
       
       if (existing) {
-        const updates: Record<string, number> = {};
-        if (editingEntry) {
-          // For edits, just add the difference (simplified: add new amounts)
-          if (isSaleType) {
-            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
-          } else {
-            updates.total_expenses = Number(existing.total_expenses || 0) + entryDebit;
-          }
-        } else {
-          if (isSaleType) {
-            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
-            updates.sales_count = Number(existing.sales_count || 0) + 1;
-          } else if (entryType === "payment" || entryType === "Payment") {
-            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
-          } else {
-            updates.total_expenses = Number(existing.total_expenses || 0) + entryDebit;
-            updates.expenses_count = Number(existing.expenses_count || 0) + 1;
-          }
-        }
-        updates.net_profit = (Number(existing.total_sales || 0) + (updates.total_sales ? updates.total_sales - Number(existing.total_sales || 0) : 0))
-          - (Number(existing.total_purchases || 0))
-          - (Number(existing.total_expenses || 0) + (updates.total_expenses ? updates.total_expenses - Number(existing.total_expenses || 0) : 0));
+        const newTotalSales = Number(existing.total_sales || 0) + ((isSaleType || entryType === "payment" || entryType === "Payment") ? entryCredit : 0);
+        const newTotalExpenses = Number(existing.total_expenses || 0) + ((!isSaleType && entryType !== "payment" && entryType !== "Payment") ? entryDebit : 0);
+        const newSalesCount = Number(existing.sales_count || 0) + ((!editingEntry && isSaleType) ? 1 : 0);
+        const newExpensesCount = Number(existing.expenses_count || 0) + ((!editingEntry && !isSaleType && entryType !== "payment" && entryType !== "Payment") ? 1 : 0);
         
-        await supabase.from("daily_summaries").update(updates).eq("id", existing.id);
+        await supabase.from("daily_summaries").update({
+          total_sales: newTotalSales,
+          total_expenses: newTotalExpenses,
+          sales_count: newSalesCount,
+          expenses_count: newExpensesCount,
+          net_profit: newTotalSales - Number(existing.total_purchases || 0) - newTotalExpenses,
+        }).eq("id", existing.id);
       } else {
         // Create new daily summary
         const newSummary: any = {
