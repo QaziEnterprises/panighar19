@@ -358,40 +358,36 @@ export default function POSPage() {
           <div className="divide-y divide-border/40">
             {cart.map((ci, index) => (
               <div key={`${ci.product_id || ci.name}-${index}`} className="px-3 py-2.5 hover:bg-muted/20 transition-colors">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <p className="text-sm font-medium truncate">{ci.name}</p>
                       {ci.is_custom && <Badge variant="outline" className="text-[8px] h-3.5 px-1 border-accent/40 text-accent">Custom</Badge>}
                     </div>
-                    <div className="flex items-center gap-2 mt-1.5">
-                      {/* Qty controls */}
-                      <div className="inline-flex items-center border border-border/60 rounded-md bg-background">
-                        <button className="h-7 w-7 flex items-center justify-center hover:bg-muted transition-colors rounded-l-md" onClick={() => updateQty(index, -1)}><Minus className="h-3 w-3" /></button>
-                        <NumberInput value={ci.quantity} onValueChange={(v) => updateItemQty(index, v)} className="w-14 h-7 text-xs text-center border-0 border-x border-border/60 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0.01} step={0.01} />
-                        <button className="h-7 w-7 flex items-center justify-center hover:bg-muted transition-colors rounded-r-md" onClick={() => updateQty(index, 1)}><Plus className="h-3 w-3" /></button>
-                      </div>
-                      <span className="text-muted-foreground text-xs">×</span>
-                      {/* Price box - same style as qty */}
-                      <div className="inline-flex items-center border border-border/60 rounded-md bg-background">
-                        <span className="h-7 px-1.5 flex items-center text-[10px] text-muted-foreground border-r border-border/60">₨</span>
-                        <NumberInput value={ci.unit_price} onValueChange={(v) => updateUnitPrice(index, v)} className="w-16 h-7 text-xs text-center border-0 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
-                      </div>
-                    </div>
-                    {/* Combined total price → auto-calculates unit price */}
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <span className="text-[10px] text-muted-foreground">Total:</span>
-                      <div className="inline-flex items-center border border-border/60 rounded-md bg-background">
-                        <span className="h-6 px-1.5 flex items-center text-[10px] text-muted-foreground border-r border-border/60">₨</span>
-                        <NumberInput value={ci.subtotal} onValueChange={(v) => setCombinedPrice(index, v)} className="w-20 h-6 text-xs text-center border-0 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 flex flex-col items-end gap-1">
-                    <button className="p-1 rounded hover:bg-destructive/10 transition-colors" onClick={() => removeFromCart(index)}>
+                    <button className="p-1 rounded hover:bg-destructive/10 transition-colors shrink-0" onClick={() => removeFromCart(index)}>
                       <X className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                     </button>
-                    <span className="text-sm font-semibold text-primary tabular-nums">₨{ci.subtotal.toLocaleString()}</span>
+                  </div>
+                  {/* Qty × Price = Total — all in one row */}
+                  <div className="flex items-center gap-1.5">
+                    {/* Qty */}
+                    <div className="inline-flex items-center border border-border/60 rounded-md bg-background flex-1 min-w-0">
+                      <button className="h-7 w-6 flex items-center justify-center hover:bg-muted transition-colors rounded-l-md shrink-0" onClick={() => updateQty(index, -1)}><Minus className="h-3 w-3" /></button>
+                      <NumberInput value={ci.quantity} onValueChange={(v) => updateItemQty(index, v)} className="w-full h-7 text-xs text-center border-0 border-x border-border/60 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0.01} step={0.01} />
+                      <button className="h-7 w-6 flex items-center justify-center hover:bg-muted transition-colors rounded-r-md shrink-0" onClick={() => updateQty(index, 1)}><Plus className="h-3 w-3" /></button>
+                    </div>
+                    <span className="text-muted-foreground text-xs shrink-0">×</span>
+                    {/* Unit Price */}
+                    <div className="inline-flex items-center border border-border/60 rounded-md bg-background flex-1 min-w-0">
+                      <span className="h-7 px-1 flex items-center text-[10px] text-muted-foreground border-r border-border/60 shrink-0">₨</span>
+                      <NumberInput value={ci.unit_price} onValueChange={(v) => updateUnitPrice(index, v)} className="w-full h-7 text-xs text-center border-0 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
+                    </div>
+                    <span className="text-muted-foreground text-xs shrink-0">=</span>
+                    {/* Total (editable → auto-calcs unit price) */}
+                    <div className="inline-flex items-center border border-border/60 rounded-md bg-background flex-1 min-w-0">
+                      <span className="h-7 px-1 flex items-center text-[10px] text-muted-foreground border-r border-border/60 shrink-0">₨</span>
+                      <NumberInput value={ci.subtotal} onValueChange={(v) => setCombinedPrice(index, v)} className="w-full h-7 text-xs text-center border-0 rounded-none bg-transparent [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]" min={0} />
+                    </div>
                   </div>
                 </div>
               </div>
