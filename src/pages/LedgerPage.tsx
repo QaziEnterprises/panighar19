@@ -182,6 +182,59 @@ export default function LedgerPage() {
       toast.success("Ledger entry added");
     }
 
+    // Update daily summary for the entry date
+    try {
+      const { data: existing } = await supabase
+        .from("daily_summaries")
+        .select("*")
+        .eq("date", entryDate)
+        .maybeSingle();
+
+      const isSaleType = ["sale", "Sale", "opening", "Opening"].includes(entryType);
+      
+      if (existing) {
+        const updates: Record<string, number> = {};
+        if (editingEntry) {
+          // For edits, just add the difference (simplified: add new amounts)
+          if (isSaleType) {
+            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
+          } else {
+            updates.total_expenses = Number(existing.total_expenses || 0) + entryDebit;
+          }
+        } else {
+          if (isSaleType) {
+            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
+            updates.sales_count = Number(existing.sales_count || 0) + 1;
+          } else if (entryType === "payment" || entryType === "Payment") {
+            updates.total_sales = Number(existing.total_sales || 0) + entryCredit;
+          } else {
+            updates.total_expenses = Number(existing.total_expenses || 0) + entryDebit;
+            updates.expenses_count = Number(existing.expenses_count || 0) + 1;
+          }
+        }
+        updates.net_profit = (Number(existing.total_sales || 0) + (updates.total_sales ? updates.total_sales - Number(existing.total_sales || 0) : 0))
+          - (Number(existing.total_purchases || 0))
+          - (Number(existing.total_expenses || 0) + (updates.total_expenses ? updates.total_expenses - Number(existing.total_expenses || 0) : 0));
+        
+        await supabase.from("daily_summaries").update(updates).eq("id", existing.id);
+      } else {
+        // Create new daily summary
+        const newSummary: any = {
+          date: entryDate,
+          total_sales: isSaleType || entryType === "payment" ? entryCredit : 0,
+          total_purchases: 0,
+          total_expenses: (!isSaleType && entryType !== "payment") ? entryDebit : 0,
+          sales_count: isSaleType ? 1 : 0,
+          purchases_count: 0,
+          expenses_count: (!isSaleType && entryType !== "payment") ? 1 : 0,
+        };
+        newSummary.net_profit = newSummary.total_sales - newSummary.total_expenses;
+        await supabase.from("daily_summaries").upsert(newSummary, { onConflict: "date" });
+      }
+    } catch (e) {
+      console.error("Failed to update daily summary:", e);
+    }
+
     await supabase.from("contacts").update({ current_balance: newBalance }).eq("id", selectedContact.id);
     resetForm();
     setSaving(false);
