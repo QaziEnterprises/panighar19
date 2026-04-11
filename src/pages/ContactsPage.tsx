@@ -103,8 +103,14 @@ export default function ContactsPage() {
   const handleDelete = async (id: string) => {
     if (!window.confirm("Are you sure you want to delete this contact?")) return;
     const contact = contacts.find(c => c.id === id);
+
+    // Delete related records first to avoid foreign key errors
+    await supabase.from("ledger_entries").delete().eq("contact_id", id);
+    await supabase.from("sale_transactions").delete().eq("customer_id", id);
+    await supabase.from("purchases").delete().eq("supplier_id", id);
+
     const { error } = await supabase.from("contacts").delete().eq("id", id);
-    if (error) { toast.error("Failed to delete"); return; }
+    if (error) { toast.error("Failed to delete: " + error.message); return; }
     toast.success("Contact deleted");
     logAction("delete", "contact", id, `Deleted contact ${contact?.name || ""}`);
     fetchContacts();
