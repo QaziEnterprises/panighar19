@@ -1,408 +1,539 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { offlineQuery } from "@/lib/offlineQuery";
-import { Calendar, Download, FileSpreadsheet, TrendingUp, TrendingDown, DollarSign, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { format } from "date-fns";
+import { Calendar as CalendarIcon, Download, FileSpreadsheet, RefreshCw, Banknote, Smartphone, Building2, CreditCard, AlertCircle, SplitSquareHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { supabase } from "@/integrations/supabase/customClient";
 import { toast } from "sonner";
-import { motion } from "framer-motion";
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, LineChart, Line,
-} from "recharts";
+import { cn } from "@/lib/utils";
 import * as XLSX from "xlsx";
 
-const CHART_COLORS = [
-  "hsl(38, 92%, 50%)", "hsl(222, 47%, 11%)", "hsl(142, 71%, 45%)",
-  "hsl(0, 72%, 51%)", "hsl(220, 14%, 70%)", "hsl(280, 60%, 50%)",
-];
+// ── Types ──
 
-interface DailySummary {
-  date: string;
-  total_sales: number;
-  total_purchases: number;
-  total_expenses: number;
-  net_profit: number;
-  sales_count: number;
-  purchases_count: number;
-  expenses_count: number;
+interface SaleBill {
+  id: string;
+  invoice_no: string | null;
+  total: number;
+  paid_amount: number;
+  payment_method: string | null;
+  payment_status: string | null;
+  customer_name: string | null;
+  created_at: string;
 }
 
-interface MonthGroup {
-  month: string; // YYYY-MM
-  label: string; // "March 2026"
-  days: DailySummary[];
-  totalSales: number;
-  totalPurchases: number;
-  totalExpenses: number;
-  totalProfit: number;
+interface LedgerEntry {
+  id: string;
+  description: string;
+  credit: number;
+  debit: number;
+  contact_name: string | null;
 }
+
+interface Expense {
+  id: string;
+  amount: number;
+  description: string | null;
+  payment_method: string | null;
+  category_name: string | null;
+}
+
+interface MethodTotals {
+  cash: number;
+  jazzcash: number;
+  easypaisa: number;
+  bank: number;
+}
+
+type BillCategory = "cash" | "jazzcash" | "easypaisa" | "bank" | "split" | "due";
+
+interface CategorizedBill extends SaleBill {
+  category: BillCategory;
+  methodBreakdown?: Record<string, number>;
+}
+
+// ── Helpers ──
+
+function normalizeMethod(m: string): string {
+  const lower = m.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (lower.includes("jazz")) return "jazzcash";
+  if (lower.includes("easy") || lower.includes("easi")) return "easypaisa";
+  if (lower.includes("bank") || lower.includes("transfer")) return "bank";
+  if (lower.includes("cash")) return "cash";
+  return lower;
+}
+
+function parsePaymentMethod(pm: string | null): Record<string, number> | null {
+  if (!pm) return null;
+  const parts = pm.split(",").map(p => p.trim()).filter(Boolean);
+  const result: Record<string, number> = {};
+  for (const part of parts) {
+    const colonIdx = part.lastIndexOf(":");
+    if (colonIdx > 0) {
+      const method = normalizeMethod(part.substring(0, colonIdx));
+      const amount = Number(part.substring(colonIdx + 1));
+      if (!isNaN(amount)) result[method] = (result[method] || 0) + amount;
+    } else {
+      const method = normalizeMethod(part);
+      if (method) result[method] = -1; // marker: single method, amount is the bill total
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function categorizeBill(bill: SaleBill): CategorizedBill {
+  // Due / unpaid first
+  if (bill.payment_status === "due" || bill.payment_status === "partial") {
+    // Check if partial has some paid portion
+    const parsed = parsePaymentMethod(bill.payment_method);
+    if (bill.payment_status === "partial" && parsed) {
+      // Has method info — treat as split if multiple or single method + due
+      const methods = Object.keys(parsed);
+      const breakdown: Record<string, number> = {};
+      for (const m of methods) {
+        breakdown[m] = parsed[m] === -1 ? bill.paid_amount : parsed[m];
+      }
+      breakdown["due"] = Number(bill.total) - Number(bill.paid_amount);
+      return { ...bill, category: "split", methodBreakdown: breakdown };
+    }
+    return { ...bill, category: "due" };
+  }
+
+  const parsed = parsePaymentMethod(bill.payment_method);
+  if (!parsed) return { ...bill, category: "cash" }; // default to cash
+
+  const methods = Object.keys(parsed);
+  if (methods.length === 1) {
+    const method = methods[0] as BillCategory;
+    if (["cash", "jazzcash", "easypaisa", "bank"].includes(method)) {
+      return { ...bill, category: method as BillCategory };
+    }
+    return { ...bill, category: "cash" };
+  }
+
+  // Multiple methods = split
+  const breakdown: Record<string, number> = {};
+  for (const m of methods) {
+    breakdown[m] = parsed[m] === -1 ? Number(bill.total) : parsed[m];
+  }
+  return { ...bill, category: "split", methodBreakdown: breakdown };
+}
+
+function calcMethodTotals(bills: CategorizedBill[]): MethodTotals {
+  const totals: MethodTotals = { cash: 0, jazzcash: 0, easypaisa: 0, bank: 0 };
+  for (const bill of bills) {
+    if (bill.category === "due") continue;
+    if (bill.category === "split" && bill.methodBreakdown) {
+      for (const [m, amt] of Object.entries(bill.methodBreakdown)) {
+        if (m === "due") continue;
+        const key = normalizeMethod(m) as keyof MethodTotals;
+        if (key in totals) totals[key] += amt;
+      }
+    } else {
+      const key = bill.category as keyof MethodTotals;
+      if (key in totals) totals[key] += Number(bill.paid_amount || bill.total);
+    }
+  }
+  return totals;
+}
+
+// ── Component ──
 
 export default function SummaryPage() {
-  const [summaries, setSummaries] = useState<DailySummary[]>([]);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [bills, setBills] = useState<SaleBill[]>([]);
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set());
-  const [syncing, setSyncing] = useState(false);
 
-  const fetchSummaries = async () => {
+  const dateStr = format(selectedDate, "yyyy-MM-dd");
+
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await offlineQuery<DailySummary>("daily_summaries", { order: "date", ascending: false });
-      setSummaries(data);
+      const [salesRes, ledgerRes, expensesRes] = await Promise.all([
+        supabase
+          .from("sale_transactions")
+          .select("id, invoice_no, total, paid_amount, payment_method, payment_status, customer_id, created_at")
+          .eq("date", dateStr),
+        supabase
+          .from("ledger_entries")
+          .select("id, description, credit, debit, contact_id")
+          .eq("date", dateStr),
+        supabase
+          .from("expenses")
+          .select("id, amount, description, payment_method, category_id")
+          .eq("date", dateStr),
+      ]);
+
+      // Fetch customer names for bills
+      const customerIds = [...new Set((salesRes.data || []).map(s => s.customer_id).filter(Boolean))];
+      const contactIds = [...new Set((ledgerRes.data || []).map(l => l.contact_id).filter(Boolean))];
+      const allContactIds = [...new Set([...customerIds, ...contactIds])];
+
+      let contactMap: Record<string, string> = {};
+      if (allContactIds.length > 0) {
+        const { data: contacts } = await supabase
+          .from("contacts")
+          .select("id, name")
+          .in("id", allContactIds);
+        if (contacts) {
+          for (const c of contacts) contactMap[c.id] = c.name;
+        }
+      }
+
+      // Fetch category names for expenses
+      const catIds = [...new Set((expensesRes.data || []).map(e => e.category_id).filter(Boolean))];
+      let catMap: Record<string, string> = {};
+      if (catIds.length > 0) {
+        const { data: cats } = await supabase
+          .from("expense_categories")
+          .select("id, name")
+          .in("id", catIds);
+        if (cats) {
+          for (const c of cats) catMap[c.id] = c.name;
+        }
+      }
+
+      setBills((salesRes.data || []).map(s => ({
+        id: s.id,
+        invoice_no: s.invoice_no,
+        total: Number(s.total || 0),
+        paid_amount: Number(s.paid_amount || 0),
+        payment_method: s.payment_method,
+        payment_status: s.payment_status,
+        customer_name: s.customer_id ? contactMap[s.customer_id] || "Unknown" : "Walk-in",
+        created_at: s.created_at,
+      })));
+
+      setLedgerEntries((ledgerRes.data || []).map(l => ({
+        id: l.id,
+        description: l.description,
+        credit: Number(l.credit || 0),
+        debit: Number(l.debit || 0),
+        contact_name: l.contact_id ? contactMap[l.contact_id] || "Unknown" : null,
+      })));
+
+      setExpenses((expensesRes.data || []).map(e => ({
+        id: e.id,
+        amount: Number(e.amount || 0),
+        description: e.description,
+        payment_method: e.payment_method,
+        category_name: e.category_id ? catMap[e.category_id] || null : null,
+      })));
     } catch (e) {
-      console.error("Summary fetch error:", e);
-      toast.error("Failed to load summaries");
+      console.error("Fetch error:", e);
+      toast.error("Failed to load report data");
     } finally {
       setLoading(false);
     }
-  };
+  }, [dateStr]);
 
-  const syncToday = async () => {
-    setSyncing(true);
-    try {
-      const todayStr = new Date().toISOString().split("T")[0];
-      const [{ data: sales }, { data: purchases }, { data: expenses }] = await Promise.all([
-        supabase.from("sale_transactions").select("total").eq("date", todayStr),
-        supabase.from("purchases").select("total").eq("date", todayStr),
-        supabase.from("expenses").select("amount").eq("date", todayStr),
-      ]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-      const totalSales = (sales || []).reduce((s, r) => s + Number(r.total || 0), 0);
-      const totalPurchases = (purchases || []).reduce((s, r) => s + Number(r.total || 0), 0);
-      const totalExpenses = (expenses || []).reduce((s, r) => s + Number(r.amount || 0), 0);
+  // ── Computed ──
 
-      const record = {
-        date: todayStr,
-        total_sales: totalSales,
-        total_purchases: totalPurchases,
-        total_expenses: totalExpenses,
-        net_profit: totalSales - totalPurchases - totalExpenses,
-        sales_count: sales?.length || 0,
-        purchases_count: purchases?.length || 0,
-        expenses_count: expenses?.length || 0,
-        updated_at: new Date().toISOString(),
-      };
+  const categorizedBills = useMemo(() => bills.map(categorizeBill), [bills]);
 
-      const { error } = await supabase.from("daily_summaries").upsert(record, { onConflict: "date" });
-      if (error) throw error;
-      toast.success("Today's summary saved");
-      fetchSummaries();
-    } catch (e) {
-      console.error("Sync error:", e);
-      toast.error("Failed to sync today's summary");
-    } finally {
-      setSyncing(false);
-    }
-  };
+  const billsByCategory = useMemo(() => {
+    const groups: Record<BillCategory, CategorizedBill[]> = { cash: [], jazzcash: [], easypaisa: [], bank: [], split: [], due: [] };
+    for (const b of categorizedBills) groups[b.category].push(b);
+    return groups;
+  }, [categorizedBills]);
 
-  useEffect(() => {
-    fetchSummaries();
-  }, []);
+  const methodTotals = useMemo(() => calcMethodTotals(categorizedBills), [categorizedBills]);
 
-  // Auto-sync today on first load only
-  const syncedRef = useRef(false);
-  useEffect(() => {
-    if (!loading && !syncedRef.current) {
-      syncedRef.current = true;
-      const todayStr = new Date().toISOString().split("T")[0];
-      const hasToday = summaries.some(s => s.date === todayStr);
-      if (!hasToday) syncToday();
-    }
-  }, [loading]);
+  const ledgerCredits = useMemo(() => ledgerEntries.reduce((s, l) => s + l.credit, 0), [ledgerEntries]);
+  const ledgerDebits = useMemo(() => ledgerEntries.reduce((s, l) => s + l.debit, 0), [ledgerEntries]);
 
-  const monthGroups = useMemo((): MonthGroup[] => {
-    const groups = new Map<string, DailySummary[]>();
-    for (const s of summaries) {
-      const month = s.date.substring(0, 7);
-      if (!groups.has(month)) groups.set(month, []);
-      groups.get(month)!.push(s);
-    }
-    return Array.from(groups.entries())
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([month, days]) => {
-        const [y, m] = month.split("-");
-        const date = new Date(Number(y), Number(m) - 1);
-        return {
-          month,
-          label: date.toLocaleString("default", { month: "long", year: "numeric" }),
-          days: days.sort((a, b) => b.date.localeCompare(a.date)),
-          totalSales: days.reduce((s, d) => s + Number(d.total_sales), 0),
-          totalPurchases: days.reduce((s, d) => s + Number(d.total_purchases), 0),
-          totalExpenses: days.reduce((s, d) => s + Number(d.total_expenses), 0),
-          totalProfit: days.reduce((s, d) => s + Number(d.net_profit), 0),
-        };
-      });
-  }, [summaries]);
+  const totalExpenses = useMemo(() => expenses.reduce((s, e) => s + e.amount, 0), [expenses]);
 
-  const toggleMonth = (month: string) => {
-    setExpandedMonths(prev => {
-      const next = new Set(prev);
-      next.has(month) ? next.delete(month) : next.add(month);
-      return next;
-    });
-  };
+  const totalIncome = methodTotals.cash + methodTotals.jazzcash + methodTotals.easypaisa + methodTotals.bank + ledgerCredits;
+  const netCash = totalIncome - totalExpenses - ledgerDebits;
 
-  // Chart data: last 30 days
-  const chartData = useMemo(() => {
-    return [...summaries]
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .slice(-30)
-      .map(s => ({
-        date: s.date.substring(5),
-        Sales: Number(s.total_sales),
-        Purchases: Number(s.total_purchases),
-        Expenses: Number(s.total_expenses),
-        Profit: Number(s.net_profit),
-      }));
-  }, [summaries]);
-
-  const categoryData = useMemo(() => {
-    const totals = summaries.reduce(
-      (acc, s) => ({
-        sales: acc.sales + Number(s.total_sales),
-        purchases: acc.purchases + Number(s.total_purchases),
-        expenses: acc.expenses + Number(s.total_expenses),
-      }),
-      { sales: 0, purchases: 0, expenses: 0 }
-    );
-    return [
-      { name: "Sales", value: totals.sales },
-      { name: "Purchases", value: totals.purchases },
-      { name: "Expenses", value: totals.expenses },
-    ].filter(d => d.value > 0);
-  }, [summaries]);
+  // ── Export ──
 
   const exportExcel = () => {
-    const rows = summaries.map(s => ({
-      Date: s.date,
-      "Total Sales": Number(s.total_sales),
-      "Total Purchases": Number(s.total_purchases),
-      "Total Expenses": Number(s.total_expenses),
-      "Net Profit": Number(s.net_profit),
-      "Sales Count": s.sales_count,
-      "Purchases Count": s.purchases_count,
-      "Expenses Count": s.expenses_count,
+    const rows = categorizedBills.map(b => ({
+      Invoice: b.invoice_no || "-",
+      Customer: b.customer_name || "-",
+      Total: b.total,
+      Paid: b.paid_amount,
+      Method: b.payment_method || "-",
+      Status: b.payment_status || "paid",
+      Category: b.category,
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Daily Summaries");
-    XLSX.writeFile(wb, "daily_summaries.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "Daily Report");
+
+    // Add expenses sheet
+    const expRows = expenses.map(e => ({
+      Description: e.description || "-",
+      Amount: e.amount,
+      Category: e.category_name || "-",
+      Method: e.payment_method || "-",
+    }));
+    const ws2 = XLSX.utils.json_to_sheet(expRows);
+    XLSX.utils.book_append_sheet(wb, ws2, "Expenses");
+
+    XLSX.writeFile(wb, `daily_report_${dateStr}.xlsx`);
     toast.success("Exported to Excel");
   };
 
+  // ── Bill Table Renderer ──
 
-  const importExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<any>(ws);
-      let count = 0;
-      for (const row of rows) {
-        const date = row.Date || row.date;
-        if (!date) continue;
-        const record = {
-          date: String(date),
-          total_sales: Number(row["Total Sales"] || row.total_sales || 0),
-          total_purchases: Number(row["Total Purchases"] || row.total_purchases || 0),
-          total_expenses: Number(row["Total Expenses"] || row.total_expenses || 0),
-          net_profit: Number(row["Net Profit"] || row.net_profit || 0),
-          sales_count: Number(row["Sales Count"] || row.sales_count || 0),
-          purchases_count: Number(row["Purchases Count"] || row.purchases_count || 0),
-          expenses_count: Number(row["Expenses Count"] || row.expenses_count || 0),
-        };
-        await supabase.from("daily_summaries").upsert(record, { onConflict: "date" });
-        count++;
-      }
-      toast.success(`Imported ${count} summary records`);
-      fetchSummaries();
-    } catch {
-      toast.error("Failed to import file");
-    }
-    e.target.value = "";
+  const BillTable = ({ title, icon, bills, color }: { title: string; icon: React.ReactNode; bills: CategorizedBill[]; color: string }) => {
+    if (bills.length === 0) return null;
+    const total = bills.reduce((s, b) => s + (b.category === "due" ? b.total : Number(b.paid_amount || b.total)), 0);
+    return (
+      <Card className="overflow-hidden">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              {icon}
+              {title}
+              <Badge variant="secondary" className="ml-1">{bills.length}</Badge>
+            </CardTitle>
+            <span className={`text-sm font-bold ${color}`}>Rs {total.toLocaleString()}</span>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 border-b text-xs">
+                <th className="px-3 py-2 text-left font-medium text-muted-foreground">Invoice</th>
+                <th className="px-3 py-2 text-left font-medium text-muted-foreground">Customer</th>
+                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Total</th>
+                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Paid</th>
+                {title.includes("Split") && <th className="px-3 py-2 text-left font-medium text-muted-foreground">Breakdown</th>}
+                {title.includes("Due") && <th className="px-3 py-2 text-right font-medium text-muted-foreground">Due</th>}
+                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bills.map(b => (
+                <tr key={b.id} className="border-b last:border-0 hover:bg-muted/20">
+                  <td className="px-3 py-2 font-medium">{b.invoice_no || "-"}</td>
+                  <td className="px-3 py-2">{b.customer_name || "-"}</td>
+                  <td className="px-3 py-2 text-right">Rs {b.total.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right text-green-600">Rs {Number(b.paid_amount).toLocaleString()}</td>
+                  {title.includes("Split") && (
+                    <td className="px-3 py-2">
+                      {b.methodBreakdown && Object.entries(b.methodBreakdown).map(([m, amt]) => (
+                        <Badge key={m} variant="outline" className="mr-1 mb-1 text-xs">
+                          {m}: Rs {amt.toLocaleString()}
+                        </Badge>
+                      ))}
+                    </td>
+                  )}
+                  {title.includes("Due") && (
+                    <td className="px-3 py-2 text-right text-destructive font-bold">
+                      Rs {(b.total - b.paid_amount).toLocaleString()}
+                    </td>
+                  )}
+                  <td className="px-3 py-2 text-right text-muted-foreground text-xs">
+                    {format(new Date(b.created_at), "hh:mm a")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    );
   };
-
-  const grandTotal = monthGroups.reduce(
-    (acc, g) => ({
-      sales: acc.sales + g.totalSales,
-      purchases: acc.purchases + g.totalPurchases,
-      expenses: acc.expenses + g.totalExpenses,
-      profit: acc.profit + g.totalProfit,
-    }),
-    { sales: 0, purchases: 0, expenses: 0, profit: 0 }
-  );
 
   return (
     <div>
+      {/* Header */}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Monthly Summary</h1>
-          <p className="text-sm text-muted-foreground">{summaries.length} daily records across {monthGroups.length} month(s)</p>
+          <h1 className="text-2xl font-bold tracking-tight">Daily Cash Report</h1>
+          <p className="text-sm text-muted-foreground">{format(selectedDate, "EEEE, MMMM d, yyyy")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={syncToday} disabled={syncing} className="gap-2">
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} /> Sync Today
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2">
+                <CalendarIcon className="h-4 w-4" />
+                {format(selectedDate, "MMM d, yyyy")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <Calendar
+                mode="single"
+                selected={selectedDate}
+                onSelect={(d) => d && setSelectedDate(d)}
+                initialFocus
+                className={cn("p-3 pointer-events-auto")}
+              />
+            </PopoverContent>
+          </Popover>
+          <Button size="sm" onClick={fetchData} disabled={loading} className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
-          <label>
-            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={importExcel} />
-            <Button size="sm" variant="outline" className="gap-2" asChild><span><FileSpreadsheet className="h-4 w-4" /> Import</span></Button>
-          </label>
-          <Button size="sm" variant="outline" onClick={exportExcel} className="gap-2" disabled={summaries.length === 0}>
+          <Button size="sm" variant="outline" onClick={exportExcel} disabled={bills.length === 0} className="gap-2">
             <Download className="h-4 w-4" /> Excel
           </Button>
         </div>
       </div>
 
-      {/* Grand Totals */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Sales</CardTitle>
-            <TrendingUp className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent><div className="text-2xl font-bold text-green-600">Rs {grandTotal.sales.toLocaleString()}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Purchases</CardTitle>
-            <TrendingDown className="h-4 w-4 text-blue-600" />
-          </CardHeader>
-          <CardContent><div className="text-2xl font-bold text-blue-600">Rs {grandTotal.purchases.toLocaleString()}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Expenses</CardTitle>
-            <DollarSign className="h-4 w-4 text-destructive" />
-          </CardHeader>
-          <CardContent><div className="text-2xl font-bold text-destructive">Rs {grandTotal.expenses.toLocaleString()}</div></CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Net Profit</CardTitle>
-            <DollarSign className="h-4 w-4" />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${grandTotal.profit >= 0 ? "text-green-600" : "text-destructive"}`}>
-              Rs {grandTotal.profit.toLocaleString()}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Charts */}
-      {chartData.length > 1 && (
-        <div className="grid gap-6 lg:grid-cols-2 mb-6">
-          <Card>
-            <CardHeader><CardTitle className="text-base">Daily Profit Trend (Last 30 Days)</CardTitle></CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={chartData}>
-                  <XAxis dataKey="date" fontSize={11} stroke="hsl(220, 9%, 46%)" />
-                  <YAxis tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} fontSize={11} stroke="hsl(220, 9%, 46%)" />
-                  <Tooltip formatter={(v: number) => [`Rs ${v.toLocaleString()}`, ""]} contentStyle={{ borderRadius: 8, border: "1px solid hsl(220, 13%, 91%)", fontSize: 13 }} />
-                  <Line type="monotone" dataKey="Profit" stroke="hsl(142, 71%, 45%)" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="Sales" stroke="hsl(38, 92%, 50%)" strokeWidth={1.5} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-base">Overall Breakdown</CardTitle></CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={categoryData} cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={3} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={12}>
-                    {categoryData.map((_, idx) => (
-                      <Cell key={idx} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v: number) => [`Rs ${v.toLocaleString()}`, "Amount"]} contentStyle={{ borderRadius: 8, border: "1px solid hsl(220, 13%, 91%)", fontSize: 13 }} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Monthly Groups */}
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading...</div>
-      ) : monthGroups.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-12 text-center">
-          <Calendar className="mx-auto h-10 w-10 text-muted-foreground" />
-          <p className="mt-4 text-muted-foreground">No summary records yet. Click "Sync Today" to save today's data.</p>
-        </div>
+        <div className="text-center py-12 text-muted-foreground">Loading report...</div>
       ) : (
-        <div className="space-y-4">
-          {monthGroups.map((group) => (
-            <motion.div key={group.month} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border overflow-hidden">
-              <button
-                onClick={() => toggleMonth(group.month)}
-                className="w-full flex items-center justify-between p-4 hover:bg-muted/30 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  {expandedMonths.has(group.month) ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  <span className="font-semibold text-lg">{group.label}</span>
-                  <Badge variant="secondary">{group.days.length} days</Badge>
+        <>
+          {/* Net Cash Hero */}
+          <Card className="mb-6 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20">
+            <CardContent className="py-6">
+              <p className="text-sm font-medium text-muted-foreground mb-1">Net Cash (Income − Expenses)</p>
+              <p className={`text-4xl font-bold ${netCash >= 0 ? "text-green-600" : "text-destructive"}`}>
+                Rs {netCash.toLocaleString()}
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                Total Income: Rs {totalIncome.toLocaleString()} | Total Expenses: Rs {totalExpenses.toLocaleString()}
+                {ledgerDebits > 0 && ` | Ledger Debits: Rs ${ledgerDebits.toLocaleString()}`}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Method Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <Card>
+              <CardContent className="py-4 flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
+                  <Banknote className="h-5 w-5 text-green-600" />
                 </div>
-                <div className="flex items-center gap-6 text-sm">
-                  <span className="text-green-600 font-medium">Sales: Rs {group.totalSales.toLocaleString()}</span>
-                  <span className="text-blue-600 font-medium">Purchases: Rs {group.totalPurchases.toLocaleString()}</span>
-                  <span className={`font-bold ${group.totalProfit >= 0 ? "text-green-600" : "text-destructive"}`}>
-                    Profit: Rs {group.totalProfit.toLocaleString()}
-                  </span>
+                <div>
+                  <p className="text-xs text-muted-foreground">Cash</p>
+                  <p className="text-lg font-bold text-green-600">Rs {methodTotals.cash.toLocaleString()}</p>
                 </div>
-              </button>
-              {expandedMonths.has(group.month) && (
-                <div className="border-t">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-muted/50 border-b">
-                        <th className="px-4 py-2 text-left font-medium text-muted-foreground">Date</th>
-                        <th className="px-4 py-2 text-right font-medium text-muted-foreground">Sales</th>
-                        <th className="px-4 py-2 text-right font-medium text-muted-foreground">Purchases</th>
-                        <th className="px-4 py-2 text-right font-medium text-muted-foreground">Expenses</th>
-                        <th className="px-4 py-2 text-right font-medium text-muted-foreground">Net Profit</th>
-                        <th className="px-4 py-2 text-center font-medium text-muted-foreground">Txns</th>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="py-4 flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <Smartphone className="h-5 w-5 text-red-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">JazzCash</p>
+                  <p className="text-lg font-bold text-red-600">Rs {methodTotals.jazzcash.toLocaleString()}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="py-4 flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-emerald-100 flex items-center justify-center">
+                  <CreditCard className="h-5 w-5 text-emerald-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">EasyPaisa</p>
+                  <p className="text-lg font-bold text-emerald-600">Rs {methodTotals.easypaisa.toLocaleString()}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="py-4 flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                  <Building2 className="h-5 w-5 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Bank Transfer</p>
+                  <p className="text-lg font-bold text-blue-600">Rs {methodTotals.bank.toLocaleString()}</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Expenses Summary */}
+          {expenses.length > 0 && (
+            <Card className="mb-6">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
+                  <span className="text-sm font-bold text-destructive">Rs {totalExpenses.toLocaleString()}</span>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 border-b text-xs">
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Description</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Category</th>
+                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenses.map(e => (
+                      <tr key={e.id} className="border-b last:border-0 hover:bg-muted/20">
+                        <td className="px-3 py-2">{e.description || "-"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{e.category_name || "-"}</td>
+                        <td className="px-3 py-2 text-right text-destructive">Rs {e.amount.toLocaleString()}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {group.days.map((day) => (
-                        <tr key={day.date} className="border-b last:border-0 hover:bg-muted/20">
-                          <td className="px-4 py-2 font-medium">{day.date}</td>
-                          <td className="px-4 py-2 text-right text-green-600">Rs {Number(day.total_sales).toLocaleString()}</td>
-                          <td className="px-4 py-2 text-right text-blue-600">Rs {Number(day.total_purchases).toLocaleString()}</td>
-                          <td className="px-4 py-2 text-right text-destructive">Rs {Number(day.total_expenses).toLocaleString()}</td>
-                          <td className={`px-4 py-2 text-right font-bold ${Number(day.net_profit) >= 0 ? "text-green-600" : "text-destructive"}`}>
-                            Rs {Number(day.net_profit).toLocaleString()}
-                          </td>
-                          <td className="px-4 py-2 text-center text-muted-foreground">
-                            {day.sales_count + day.purchases_count + day.expenses_count}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="bg-muted/50 font-bold border-t">
-                        <td className="px-4 py-2">Month Total</td>
-                        <td className="px-4 py-2 text-right text-green-600">Rs {group.totalSales.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-right text-blue-600">Rs {group.totalPurchases.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-right text-destructive">Rs {group.totalExpenses.toLocaleString()}</td>
-                        <td className={`px-4 py-2 text-right ${group.totalProfit >= 0 ? "text-green-600" : "text-destructive"}`}>
-                          Rs {group.totalProfit.toLocaleString()}
-                        </td>
-                        <td></td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Ledger Entries */}
+          {ledgerEntries.length > 0 && (
+            <Card className="mb-6">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-semibold">Ledger Entries</CardTitle>
+                  <div className="flex gap-3 text-sm">
+                    <span className="text-green-600 font-medium">Credits: Rs {ledgerCredits.toLocaleString()}</span>
+                    <span className="text-destructive font-medium">Debits: Rs {ledgerDebits.toLocaleString()}</span>
+                  </div>
                 </div>
-              )}
-            </motion.div>
-          ))}
-        </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 border-b text-xs">
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Description</th>
+                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Contact</th>
+                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Credit</th>
+                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Debit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledgerEntries.map(l => (
+                      <tr key={l.id} className="border-b last:border-0 hover:bg-muted/20">
+                        <td className="px-3 py-2">{l.description}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{l.contact_name || "-"}</td>
+                        <td className="px-3 py-2 text-right text-green-600">{l.credit > 0 ? `Rs ${l.credit.toLocaleString()}` : "-"}</td>
+                        <td className="px-3 py-2 text-right text-destructive">{l.debit > 0 ? `Rs ${l.debit.toLocaleString()}` : "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Bill Tables by Category */}
+          <div className="space-y-4">
+            <BillTable title="Cash Bills" icon={<Banknote className="h-4 w-4 text-green-600" />} bills={billsByCategory.cash} color="text-green-600" />
+            <BillTable title="JazzCash Bills" icon={<Smartphone className="h-4 w-4 text-red-600" />} bills={billsByCategory.jazzcash} color="text-red-600" />
+            <BillTable title="EasyPaisa Bills" icon={<CreditCard className="h-4 w-4 text-emerald-600" />} bills={billsByCategory.easypaisa} color="text-emerald-600" />
+            <BillTable title="Bank Transfer Bills" icon={<Building2 className="h-4 w-4 text-blue-600" />} bills={billsByCategory.bank} color="text-blue-600" />
+            <BillTable title="Split Payment Bills" icon={<SplitSquareHorizontal className="h-4 w-4 text-purple-600" />} bills={billsByCategory.split} color="text-purple-600" />
+            <BillTable title="Unpaid / Due Bills" icon={<AlertCircle className="h-4 w-4 text-destructive" />} bills={billsByCategory.due} color="text-destructive" />
+          </div>
+
+          {/* Empty state */}
+          {bills.length === 0 && expenses.length === 0 && ledgerEntries.length === 0 && (
+            <div className="rounded-lg border border-dashed p-12 text-center mt-6">
+              <FileSpreadsheet className="mx-auto h-10 w-10 text-muted-foreground" />
+              <p className="mt-4 text-muted-foreground">No transactions found for {format(selectedDate, "MMMM d, yyyy")}.</p>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
