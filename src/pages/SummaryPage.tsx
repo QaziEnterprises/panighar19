@@ -1,11 +1,16 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { format } from "date-fns";
-import { Calendar as CalendarIcon, Download, FileSpreadsheet, RefreshCw, Banknote, Smartphone, Building2, CreditCard, AlertCircle, SplitSquareHorizontal } from "lucide-react";
+import {
+  Calendar as CalendarIcon, Download, RefreshCw, Banknote, Smartphone,
+  Building2, CreditCard, AlertCircle, SplitSquareHorizontal, FileSpreadsheet,
+  TrendingUp, TrendingDown, Wallet, Receipt, BookOpen, ArrowUpRight, ArrowDownRight
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/customClient";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -77,19 +82,16 @@ function parsePaymentMethod(pm: string | null): Record<string, number> | null {
       if (!isNaN(amount)) result[method] = (result[method] || 0) + amount;
     } else {
       const method = normalizeMethod(part);
-      if (method) result[method] = -1; // marker: single method, amount is the bill total
+      if (method) result[method] = -1;
     }
   }
   return Object.keys(result).length > 0 ? result : null;
 }
 
 function categorizeBill(bill: SaleBill): CategorizedBill {
-  // Due / unpaid first
   if (bill.payment_status === "due" || bill.payment_status === "partial") {
-    // Check if partial has some paid portion
     const parsed = parsePaymentMethod(bill.payment_method);
     if (bill.payment_status === "partial" && parsed) {
-      // Has method info — treat as split if multiple or single method + due
       const methods = Object.keys(parsed);
       const breakdown: Record<string, number> = {};
       for (const m of methods) {
@@ -102,7 +104,7 @@ function categorizeBill(bill: SaleBill): CategorizedBill {
   }
 
   const parsed = parsePaymentMethod(bill.payment_method);
-  if (!parsed) return { ...bill, category: "cash" }; // default to cash
+  if (!parsed) return { ...bill, category: "cash" };
 
   const methods = Object.keys(parsed);
   if (methods.length === 1) {
@@ -113,7 +115,6 @@ function categorizeBill(bill: SaleBill): CategorizedBill {
     return { ...bill, category: "cash" };
   }
 
-  // Multiple methods = split
   const breakdown: Record<string, number> = {};
   for (const m of methods) {
     breakdown[m] = parsed[m] === -1 ? Number(bill.total) : parsed[m];
@@ -139,6 +140,15 @@ function calcMethodTotals(bills: CategorizedBill[]): MethodTotals {
   return totals;
 }
 
+const methodConfig = {
+  cash: { label: "Cash", icon: Banknote, color: "text-green-600", bg: "bg-green-500/10", border: "border-green-500/20", iconBg: "bg-green-500/15" },
+  jazzcash: { label: "JazzCash", icon: Smartphone, color: "text-red-600", bg: "bg-red-500/10", border: "border-red-500/20", iconBg: "bg-red-500/15" },
+  easypaisa: { label: "EasyPaisa", icon: CreditCard, color: "text-emerald-600", bg: "bg-emerald-500/10", border: "border-emerald-500/20", iconBg: "bg-emerald-500/15" },
+  bank: { label: "Bank Transfer", icon: Building2, color: "text-blue-600", bg: "bg-blue-500/10", border: "border-blue-500/20", iconBg: "bg-blue-500/15" },
+  split: { label: "Split Payment", icon: SplitSquareHorizontal, color: "text-purple-600", bg: "bg-purple-500/10", border: "border-purple-500/20", iconBg: "bg-purple-500/15" },
+  due: { label: "Unpaid / Due", icon: AlertCircle, color: "text-destructive", bg: "bg-destructive/10", border: "border-destructive/20", iconBg: "bg-destructive/15" },
+} as const;
+
 // ── Component ──
 
 export default function SummaryPage() {
@@ -147,8 +157,18 @@ export default function SummaryPage() {
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["cash", "jazzcash", "easypaisa", "bank", "split", "due", "expenses", "ledger"]));
 
   const dateStr = format(selectedDate, "yyyy-MM-dd");
+
+  const toggleSection = (key: string) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -168,33 +188,21 @@ export default function SummaryPage() {
           .eq("date", dateStr),
       ]);
 
-      // Fetch customer names for bills
       const customerIds = [...new Set((salesRes.data || []).map(s => s.customer_id).filter(Boolean))];
       const contactIds = [...new Set((ledgerRes.data || []).map(l => l.contact_id).filter(Boolean))];
       const allContactIds = [...new Set([...customerIds, ...contactIds])];
 
       let contactMap: Record<string, string> = {};
       if (allContactIds.length > 0) {
-        const { data: contacts } = await supabase
-          .from("contacts")
-          .select("id, name")
-          .in("id", allContactIds);
-        if (contacts) {
-          for (const c of contacts) contactMap[c.id] = c.name;
-        }
+        const { data: contacts } = await supabase.from("contacts").select("id, name").in("id", allContactIds);
+        if (contacts) for (const c of contacts) contactMap[c.id] = c.name;
       }
 
-      // Fetch category names for expenses
       const catIds = [...new Set((expensesRes.data || []).map(e => e.category_id).filter(Boolean))];
       let catMap: Record<string, string> = {};
       if (catIds.length > 0) {
-        const { data: cats } = await supabase
-          .from("expense_categories")
-          .select("id, name")
-          .in("id", catIds);
-        if (cats) {
-          for (const c of cats) catMap[c.id] = c.name;
-        }
+        const { data: cats } = await supabase.from("expense_categories").select("id, name").in("id", catIds);
+        if (cats) for (const c of cats) catMap[c.id] = c.name;
       }
 
       setBills((salesRes.data || []).map(s => ({
@@ -234,27 +242,21 @@ export default function SummaryPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // ── Computed ──
-
   const categorizedBills = useMemo(() => bills.map(categorizeBill), [bills]);
-
   const billsByCategory = useMemo(() => {
     const groups: Record<BillCategory, CategorizedBill[]> = { cash: [], jazzcash: [], easypaisa: [], bank: [], split: [], due: [] };
     for (const b of categorizedBills) groups[b.category].push(b);
     return groups;
   }, [categorizedBills]);
-
   const methodTotals = useMemo(() => calcMethodTotals(categorizedBills), [categorizedBills]);
-
   const ledgerCredits = useMemo(() => ledgerEntries.reduce((s, l) => s + l.credit, 0), [ledgerEntries]);
   const ledgerDebits = useMemo(() => ledgerEntries.reduce((s, l) => s + l.debit, 0), [ledgerEntries]);
-
   const totalExpenses = useMemo(() => expenses.reduce((s, e) => s + e.amount, 0), [expenses]);
-
   const totalIncome = methodTotals.cash + methodTotals.jazzcash + methodTotals.easypaisa + methodTotals.bank + ledgerCredits;
   const netCash = totalIncome - totalExpenses - ledgerDebits;
+  const totalDue = useMemo(() => billsByCategory.due.reduce((s, b) => s + (b.total - b.paid_amount), 0), [billsByCategory.due]);
 
   // ── Export ──
-
   const exportExcel = () => {
     const rows = categorizedBills.map(b => ({
       Invoice: b.invoice_no || "-",
@@ -268,8 +270,6 @@ export default function SummaryPage() {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Daily Report");
-
-    // Add expenses sheet
     const expRows = expenses.map(e => ({
       Description: e.description || "-",
       Amount: e.amount,
@@ -278,86 +278,98 @@ export default function SummaryPage() {
     }));
     const ws2 = XLSX.utils.json_to_sheet(expRows);
     XLSX.utils.book_append_sheet(wb, ws2, "Expenses");
-
     XLSX.writeFile(wb, `daily_report_${dateStr}.xlsx`);
     toast.success("Exported to Excel");
   };
 
-  // ── Bill Table Renderer ──
-
-  const BillTable = ({ title, icon, bills, color }: { title: string; icon: React.ReactNode; bills: CategorizedBill[]; color: string }) => {
-    if (bills.length === 0) return null;
-    const total = bills.reduce((s, b) => s + (b.category === "due" ? b.total : Number(b.paid_amount || b.total)), 0);
+  // ── Section Header ──
+  const SectionHeader = ({ sectionKey, title, icon: Icon, count, total, color, iconBg }: {
+    sectionKey: string; title: string; icon: any; count: number; total: number; color: string; iconBg: string;
+  }) => {
+    const isOpen = expandedSections.has(sectionKey);
     return (
-      <Card className="overflow-hidden">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              {icon}
-              {title}
-              <Badge variant="secondary" className="ml-1">{bills.length}</Badge>
-            </CardTitle>
-            <span className={`text-sm font-bold ${color}`}>Rs {total.toLocaleString()}</span>
+      <button
+        onClick={() => toggleSection(sectionKey)}
+        className="w-full flex items-center justify-between py-3 px-4 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors group"
+      >
+        <div className="flex items-center gap-3">
+          <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center", iconBg)}>
+            <Icon className={cn("h-4 w-4", color)} />
           </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted/50 border-b text-xs">
-                <th className="px-3 py-2 text-left font-medium text-muted-foreground">Invoice</th>
-                <th className="px-3 py-2 text-left font-medium text-muted-foreground">Customer</th>
-                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Total</th>
-                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Paid</th>
-                {title.includes("Split") && <th className="px-3 py-2 text-left font-medium text-muted-foreground">Breakdown</th>}
-                {title.includes("Due") && <th className="px-3 py-2 text-right font-medium text-muted-foreground">Due</th>}
-                <th className="px-3 py-2 text-right font-medium text-muted-foreground">Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bills.map(b => (
-                <tr key={b.id} className="border-b last:border-0 hover:bg-muted/20">
-                  <td className="px-3 py-2 font-medium">{b.invoice_no || "-"}</td>
-                  <td className="px-3 py-2">{b.customer_name || "-"}</td>
-                  <td className="px-3 py-2 text-right">Rs {b.total.toLocaleString()}</td>
-                  <td className="px-3 py-2 text-right text-green-600">Rs {Number(b.paid_amount).toLocaleString()}</td>
-                  {title.includes("Split") && (
-                    <td className="px-3 py-2">
-                      {b.methodBreakdown && Object.entries(b.methodBreakdown).map(([m, amt]) => (
-                        <Badge key={m} variant="outline" className="mr-1 mb-1 text-xs">
-                          {m}: Rs {amt.toLocaleString()}
-                        </Badge>
-                      ))}
-                    </td>
-                  )}
-                  {title.includes("Due") && (
-                    <td className="px-3 py-2 text-right text-destructive font-bold">
-                      Rs {(b.total - b.paid_amount).toLocaleString()}
-                    </td>
-                  )}
-                  <td className="px-3 py-2 text-right text-muted-foreground text-xs">
-                    {format(new Date(b.created_at), "hh:mm a")}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+          <span className="font-semibold text-sm">{title}</span>
+          <Badge variant="secondary" className="text-xs px-2 py-0">{count}</Badge>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={cn("font-bold text-sm", color)}>Rs {total.toLocaleString()}</span>
+          <svg className={cn("h-4 w-4 text-muted-foreground transition-transform", isOpen && "rotate-180")} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
+        </div>
+      </button>
     );
   };
 
+  // ── Bill Rows ──
+  const BillRows = ({ bills: billList, showBreakdown, showDue }: { bills: CategorizedBill[]; showBreakdown?: boolean; showDue?: boolean }) => (
+    <div className="mt-2 rounded-lg border overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-muted/40 text-xs">
+            <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Invoice</th>
+            <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Customer</th>
+            <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Total</th>
+            <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Paid</th>
+            {showDue && <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Due</th>}
+            {showBreakdown && <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Breakdown</th>}
+            <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {billList.map((b, i) => (
+            <tr key={b.id} className={cn("border-t transition-colors hover:bg-muted/20", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
+              <td className="px-3 py-2.5 font-mono text-xs font-medium">{b.invoice_no || "-"}</td>
+              <td className="px-3 py-2.5">{b.customer_name || "-"}</td>
+              <td className="px-3 py-2.5 text-right font-medium">Rs {b.total.toLocaleString()}</td>
+              <td className="px-3 py-2.5 text-right text-green-600 font-medium">Rs {Number(b.paid_amount).toLocaleString()}</td>
+              {showDue && (
+                <td className="px-3 py-2.5 text-right text-destructive font-bold">
+                  Rs {(b.total - b.paid_amount).toLocaleString()}
+                </td>
+              )}
+              {showBreakdown && (
+                <td className="px-3 py-2.5">
+                  <div className="flex flex-wrap gap-1">
+                    {b.methodBreakdown && Object.entries(b.methodBreakdown).map(([m, amt]) => (
+                      <Badge key={m} variant="outline" className="text-[10px] px-1.5 py-0">
+                        {m}: Rs {amt.toLocaleString()}
+                      </Badge>
+                    ))}
+                  </div>
+                </td>
+              )}
+              <td className="px-3 py-2.5 text-right text-muted-foreground text-xs">
+                {format(new Date(b.created_at), "hh:mm a")}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
   return (
-    <div>
-      {/* Header */}
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="max-w-5xl mx-auto">
+      {/* ─── Header ─── */}
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Daily Cash Report</h1>
+          <div className="flex items-center gap-2 mb-1">
+            <Receipt className="h-6 w-6 text-primary" />
+            <h1 className="text-2xl font-bold tracking-tight">Daily Cash Report</h1>
+          </div>
           <p className="text-sm text-muted-foreground">{format(selectedDate, "EEEE, MMMM d, yyyy")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
+              <Button variant="outline" size="sm" className="gap-2 shadow-sm">
                 <CalendarIcon className="h-4 w-4" />
                 {format(selectedDate, "MMM d, yyyy")}
               </Button>
@@ -372,168 +384,272 @@ export default function SummaryPage() {
               />
             </PopoverContent>
           </Popover>
-          <Button size="sm" onClick={fetchData} disabled={loading} className="gap-2">
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+          <Button size="sm" onClick={fetchData} disabled={loading} variant="outline" className="gap-2 shadow-sm">
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
-          <Button size="sm" variant="outline" onClick={exportExcel} disabled={bills.length === 0} className="gap-2">
-            <Download className="h-4 w-4" /> Excel
+          <Button size="sm" variant="outline" onClick={exportExcel} disabled={bills.length === 0} className="gap-2 shadow-sm">
+            <Download className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading report...</div>
+        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
+          <RefreshCw className="h-8 w-8 animate-spin" />
+          <p className="text-sm">Loading report...</p>
+        </div>
+      ) : bills.length === 0 && expenses.length === 0 && ledgerEntries.length === 0 ? (
+        <div className="rounded-xl border-2 border-dashed p-16 text-center">
+          <FileSpreadsheet className="mx-auto h-12 w-12 text-muted-foreground/50" />
+          <p className="mt-4 text-muted-foreground font-medium">No transactions found</p>
+          <p className="text-xs text-muted-foreground mt-1">{format(selectedDate, "MMMM d, yyyy")}</p>
+        </div>
       ) : (
-        <>
-          {/* Net Cash Hero */}
-          <Card className="mb-6 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20">
-            <CardContent className="py-6">
-              <p className="text-sm font-medium text-muted-foreground mb-1">Net Cash (Income − Expenses)</p>
-              <p className={`text-4xl font-bold ${netCash >= 0 ? "text-green-600" : "text-destructive"}`}>
-                Rs {netCash.toLocaleString()}
+        <div className="space-y-6">
+          {/* ─── Net Cash Hero ─── */}
+          <Card className="overflow-hidden border-0 shadow-lg">
+            <div className="bg-gradient-to-br from-primary/15 via-primary/5 to-transparent p-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Wallet className="h-5 w-5 text-primary" />
+                <span className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Net Cash Position</span>
+              </div>
+              <p className={cn("text-5xl font-extrabold tracking-tight", netCash >= 0 ? "text-green-600" : "text-destructive")}>
+                Rs {Math.abs(netCash).toLocaleString()}
+                {netCash < 0 && <span className="text-lg ml-1">(deficit)</span>}
               </p>
-              <p className="text-xs text-muted-foreground mt-2">
-                Total Income: Rs {totalIncome.toLocaleString()} | Total Expenses: Rs {totalExpenses.toLocaleString()}
-                {ledgerDebits > 0 && ` | Ledger Debits: Rs ${ledgerDebits.toLocaleString()}`}
-              </p>
-            </CardContent>
+              <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                <span className="flex items-center gap-1.5 text-green-600">
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                  Income: Rs {totalIncome.toLocaleString()}
+                </span>
+                <span className="flex items-center gap-1.5 text-destructive">
+                  <ArrowDownRight className="h-3.5 w-3.5" />
+                  Expenses: Rs {totalExpenses.toLocaleString()}
+                </span>
+                {ledgerDebits > 0 && (
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    Ledger Debits: Rs {ledgerDebits.toLocaleString()}
+                  </span>
+                )}
+                {totalDue > 0 && (
+                  <span className="flex items-center gap-1.5 text-amber-600">
+                    Outstanding: Rs {totalDue.toLocaleString()}
+                  </span>
+                )}
+              </div>
+            </div>
           </Card>
 
-          {/* Method Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-            <Card>
-              <CardContent className="py-4 flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
-                  <Banknote className="h-5 w-5 text-green-600" />
+          {/* ─── Payment Method Breakdown ─── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {(["cash", "jazzcash", "easypaisa", "bank"] as const).map(method => {
+              const cfg = methodConfig[method];
+              const Icon = cfg.icon;
+              const amount = methodTotals[method];
+              const billCount = billsByCategory[method].length;
+              return (
+                <Card key={method} className={cn("border", cfg.border, "transition-all hover:shadow-md")}>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center", cfg.iconBg)}>
+                        <Icon className={cn("h-4.5 w-4.5", cfg.color)} />
+                      </div>
+                      {billCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{billCount} bills</Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground font-medium">{cfg.label}</p>
+                    <p className={cn("text-xl font-bold mt-0.5", cfg.color)}>Rs {amount.toLocaleString()}</p>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+
+          {/* ─── Quick Stats Row ─── */}
+          <div className="grid grid-cols-3 gap-3">
+            <Card className="border-amber-500/20">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="h-9 w-9 rounded-lg bg-amber-500/15 flex items-center justify-center">
+                  <Receipt className="h-4 w-4 text-amber-600" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Cash</p>
-                  <p className="text-lg font-bold text-green-600">Rs {methodTotals.cash.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Total Bills</p>
+                  <p className="text-lg font-bold">{bills.length}</p>
                 </div>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="py-4 flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-red-100 flex items-center justify-center">
-                  <Smartphone className="h-5 w-5 text-red-600" />
+            <Card className="border-destructive/20">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="h-9 w-9 rounded-lg bg-destructive/15 flex items-center justify-center">
+                  <TrendingDown className="h-4 w-4 text-destructive" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">JazzCash</p>
-                  <p className="text-lg font-bold text-red-600">Rs {methodTotals.jazzcash.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Expenses</p>
+                  <p className="text-lg font-bold text-destructive">Rs {totalExpenses.toLocaleString()}</p>
                 </div>
               </CardContent>
             </Card>
-            <Card>
-              <CardContent className="py-4 flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-emerald-100 flex items-center justify-center">
-                  <CreditCard className="h-5 w-5 text-emerald-600" />
+            <Card className="border-blue-500/20">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="h-9 w-9 rounded-lg bg-blue-500/15 flex items-center justify-center">
+                  <BookOpen className="h-4 w-4 text-blue-600" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">EasyPaisa</p>
-                  <p className="text-lg font-bold text-emerald-600">Rs {methodTotals.easypaisa.toLocaleString()}</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="py-4 flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
-                  <Building2 className="h-5 w-5 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Bank Transfer</p>
-                  <p className="text-lg font-bold text-blue-600">Rs {methodTotals.bank.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Ledger</p>
+                  <p className="text-lg font-bold text-green-600">+{ledgerCredits.toLocaleString()}</p>
                 </div>
               </CardContent>
             </Card>
           </div>
 
-          {/* Expenses Summary */}
+          <Separator />
+
+          {/* ─── Bill Sections ─── */}
+          <div className="space-y-3">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" /> Transaction Details
+            </h2>
+
+            {/* Cash, JazzCash, EasyPaisa, Bank */}
+            {(["cash", "jazzcash", "easypaisa", "bank"] as const).map(method => {
+              const cfg = methodConfig[method];
+              const methodBills = billsByCategory[method];
+              if (methodBills.length === 0) return null;
+              const total = methodBills.reduce((s, b) => s + Number(b.paid_amount || b.total), 0);
+              return (
+                <div key={method}>
+                  <SectionHeader
+                    sectionKey={method}
+                    title={`${cfg.label} Bills`}
+                    icon={cfg.icon}
+                    count={methodBills.length}
+                    total={total}
+                    color={cfg.color}
+                    iconBg={cfg.iconBg}
+                  />
+                  {expandedSections.has(method) && <BillRows bills={methodBills} />}
+                </div>
+              );
+            })}
+
+            {/* Split */}
+            {billsByCategory.split.length > 0 && (
+              <div>
+                <SectionHeader
+                  sectionKey="split"
+                  title="Split Payment Bills"
+                  icon={methodConfig.split.icon}
+                  count={billsByCategory.split.length}
+                  total={billsByCategory.split.reduce((s, b) => s + Number(b.paid_amount || b.total), 0)}
+                  color={methodConfig.split.color}
+                  iconBg={methodConfig.split.iconBg}
+                />
+                {expandedSections.has("split") && <BillRows bills={billsByCategory.split} showBreakdown />}
+              </div>
+            )}
+
+            {/* Due */}
+            {billsByCategory.due.length > 0 && (
+              <div>
+                <SectionHeader
+                  sectionKey="due"
+                  title="Unpaid / Due Bills"
+                  icon={methodConfig.due.icon}
+                  count={billsByCategory.due.length}
+                  total={totalDue}
+                  color={methodConfig.due.color}
+                  iconBg={methodConfig.due.iconBg}
+                />
+                {expandedSections.has("due") && <BillRows bills={billsByCategory.due} showDue />}
+              </div>
+            )}
+          </div>
+
+          {/* ─── Expenses Detail ─── */}
           {expenses.length > 0 && (
-            <Card className="mb-6">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
-                  <span className="text-sm font-bold text-destructive">Rs {totalExpenses.toLocaleString()}</span>
-                </div>
-              </CardHeader>
-              <CardContent className="p-0">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/50 border-b text-xs">
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Description</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Category</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {expenses.map(e => (
-                      <tr key={e.id} className="border-b last:border-0 hover:bg-muted/20">
-                        <td className="px-3 py-2">{e.description || "-"}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{e.category_name || "-"}</td>
-                        <td className="px-3 py-2 text-right text-destructive">Rs {e.amount.toLocaleString()}</td>
+            <div>
+              <Separator className="mb-3" />
+              <SectionHeader
+                sectionKey="expenses"
+                title="Expenses"
+                icon={TrendingDown}
+                count={expenses.length}
+                total={totalExpenses}
+                color="text-destructive"
+                iconBg="bg-destructive/15"
+              />
+              {expandedSections.has("expenses") && (
+                <div className="mt-2 rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/40 text-xs">
+                        <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Description</th>
+                        <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Category</th>
+                        <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Method</th>
+                        <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Amount</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Ledger Entries */}
-          {ledgerEntries.length > 0 && (
-            <Card className="mb-6">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-semibold">Ledger Entries</CardTitle>
-                  <div className="flex gap-3 text-sm">
-                    <span className="text-green-600 font-medium">Credits: Rs {ledgerCredits.toLocaleString()}</span>
-                    <span className="text-destructive font-medium">Debits: Rs {ledgerDebits.toLocaleString()}</span>
-                  </div>
+                    </thead>
+                    <tbody>
+                      {expenses.map((e, i) => (
+                        <tr key={e.id} className={cn("border-t hover:bg-muted/20", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
+                          <td className="px-3 py-2.5">{e.description || "-"}</td>
+                          <td className="px-3 py-2.5 text-muted-foreground">{e.category_name || "-"}</td>
+                          <td className="px-3 py-2.5 text-muted-foreground text-xs">{e.payment_method || "-"}</td>
+                          <td className="px-3 py-2.5 text-right text-destructive font-medium">Rs {e.amount.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              </CardHeader>
-              <CardContent className="p-0">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/50 border-b text-xs">
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Description</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">Contact</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Credit</th>
-                      <th className="px-3 py-2 text-right font-medium text-muted-foreground">Debit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ledgerEntries.map(l => (
-                      <tr key={l.id} className="border-b last:border-0 hover:bg-muted/20">
-                        <td className="px-3 py-2">{l.description}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{l.contact_name || "-"}</td>
-                        <td className="px-3 py-2 text-right text-green-600">{l.credit > 0 ? `Rs ${l.credit.toLocaleString()}` : "-"}</td>
-                        <td className="px-3 py-2 text-right text-destructive">{l.debit > 0 ? `Rs ${l.debit.toLocaleString()}` : "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Bill Tables by Category */}
-          <div className="space-y-4">
-            <BillTable title="Cash Bills" icon={<Banknote className="h-4 w-4 text-green-600" />} bills={billsByCategory.cash} color="text-green-600" />
-            <BillTable title="JazzCash Bills" icon={<Smartphone className="h-4 w-4 text-red-600" />} bills={billsByCategory.jazzcash} color="text-red-600" />
-            <BillTable title="EasyPaisa Bills" icon={<CreditCard className="h-4 w-4 text-emerald-600" />} bills={billsByCategory.easypaisa} color="text-emerald-600" />
-            <BillTable title="Bank Transfer Bills" icon={<Building2 className="h-4 w-4 text-blue-600" />} bills={billsByCategory.bank} color="text-blue-600" />
-            <BillTable title="Split Payment Bills" icon={<SplitSquareHorizontal className="h-4 w-4 text-purple-600" />} bills={billsByCategory.split} color="text-purple-600" />
-            <BillTable title="Unpaid / Due Bills" icon={<AlertCircle className="h-4 w-4 text-destructive" />} bills={billsByCategory.due} color="text-destructive" />
-          </div>
-
-          {/* Empty state */}
-          {bills.length === 0 && expenses.length === 0 && ledgerEntries.length === 0 && (
-            <div className="rounded-lg border border-dashed p-12 text-center mt-6">
-              <FileSpreadsheet className="mx-auto h-10 w-10 text-muted-foreground" />
-              <p className="mt-4 text-muted-foreground">No transactions found for {format(selectedDate, "MMMM d, yyyy")}.</p>
+              )}
             </div>
           )}
-        </>
+
+          {/* ─── Ledger Detail ─── */}
+          {ledgerEntries.length > 0 && (
+            <div>
+              <Separator className="mb-3" />
+              <SectionHeader
+                sectionKey="ledger"
+                title="Ledger Entries"
+                icon={BookOpen}
+                count={ledgerEntries.length}
+                total={ledgerCredits - ledgerDebits}
+                color="text-blue-600"
+                iconBg="bg-blue-500/15"
+              />
+              {expandedSections.has("ledger") && (
+                <div className="mt-2 rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/40 text-xs">
+                        <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Description</th>
+                        <th className="px-3 py-2.5 text-left font-medium text-muted-foreground">Contact</th>
+                        <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Credit</th>
+                        <th className="px-3 py-2.5 text-right font-medium text-muted-foreground">Debit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledgerEntries.map((l, i) => (
+                        <tr key={l.id} className={cn("border-t hover:bg-muted/20", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
+                          <td className="px-3 py-2.5">{l.description}</td>
+                          <td className="px-3 py-2.5 text-muted-foreground">{l.contact_name || "-"}</td>
+                          <td className="px-3 py-2.5 text-right text-green-600 font-medium">
+                            {l.credit > 0 ? `Rs ${l.credit.toLocaleString()}` : "-"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-destructive font-medium">
+                            {l.debit > 0 ? `Rs ${l.debit.toLocaleString()}` : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
